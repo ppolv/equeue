@@ -1,0 +1,14 @@
+%%-*- mode: erlang -*-
+{application, equeue,
+ [
+  {description, "Erlang Push Notification Broadcast"},
+  {vsn, "0.1.0"},
+  {registered, [equeue]},
+  {applications, [
+                  lager,
+                  kernel,
+                  stdlib
+                 ]},
+  {mod, {equeue_app, []}},
+  {env, [ ]}
+ ]}.
