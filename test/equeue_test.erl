@@ -82,14 +82,57 @@ check_results([{in,_D}|Rest], N) ->
     ?assert(N =< (10 + ?PARALELL_SENDERS)),  %%because if it is allowed to push 
     check_results(Rest, N+1);
 check_results([{out,_D}|Rest], N) ->
-    check_results(Rest, N-1).
+    check_results(Rest, N-1);
+check_results(A,B) ->
+    ?debugFmt("Bad results, got  ~p , ~p \n", [A,B]),
+    ?assert(false).
 
 receive_all(0) -> [];
 receive_all(N) -> 
     receive
         X ->
             [X | receive_all(N-1)]
+    after 100 ->
+            []
     end.
 
 
 
+
+worker_crash_test() ->
+    {ok,Q} = equeue:start_link(10),
+    Parent = self(),
+    Pids = lists:map(fun(I) -> spawn(fun() ->
+                {ok,Item} = equeue:recv(Q),
+                Parent ! {I, Item}
+        end) end, lists:seq(1,5)),
+    Pids2 = lists:map(fun(I) -> spawn(fun() ->
+                equeue:active_once(Q),
+                receive
+                    {job,Item} ->
+                        Parent ! {I, Item}
+                end
+        end) end, lists:seq(1,5)),
+    timer:sleep(100), %%give time to the 10 processes do subscribe
+    %%then crash some
+    exit(lists:nth(1,Pids), crash),  %%crash two processes
+    exit(lists:nth(3,Pids), crash),  
+    exit(lists:nth(1,Pids2), crash),  %%crash two processes
+    exit(lists:nth(3,Pids2), crash),  
+    equeue:push(Q, a),
+    equeue:push(Q, b),
+    equeue:push(Q, c),
+    equeue:push(Q, d),
+    equeue:push(Q, e),
+    equeue:push(Q, f),
+    Received = receive_all(6),
+    ?assertEqual(6, length(Received)),
+    ?assertEqual([2,2,4,4,5,5], lists:sort([I || {I,_Item} <- Received])),
+    ?assertEqual([a,b,c,d,e,f], lists:sort([Item || {_I,Item} <- Received])),
+    ok.
+
+
+
+
+
+                

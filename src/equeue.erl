@@ -8,14 +8,14 @@
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
-
 -record(state, {
         size :: integer(),   %%If the queue has less element than this this value, producer don't block on push
         queue :: queue(),
         blocked_senders :: queue(),   
         current_size :: integer(),
-        subscribed_workers :: [term()]   %%  [active_once | gen_server:call]  subscribers
+        subscribed_workers :: [term()]   %%  [{active_once, blocking, pid()|from(), monitor_ref()}]  subscribers
         }).
+
 
 push(Queue, Item) ->
     gen_server:call(Queue, {push, Item}, infinity).
@@ -24,7 +24,7 @@ active_once(Queue) ->
     gen_server:call(Queue, {request_work, {active_once, self()}}).
 
 recv(Queue) ->
-    gen_server:call(Queue, {request_work, blocking}, infinity).
+    gen_server:call(Queue, {request_work, {blocking, self()}}, infinity).
 
 stop_recv(Queue) ->
     gen_server:call(Queue, {stop_recv, self()}).
@@ -38,14 +38,15 @@ init([Size]) ->
     {ok, #state{size = Size, queue = queue:new(), current_size = 0, subscribed_workers = [], blocked_senders=queue:new()}}.
 
 %% TODO monitor the subscribers
-handle_call({request_work, RequestType}, From, State = #state{current_size = 0, subscribed_workers = S}) ->
+handle_call({request_work, {RequestType, Pid}}, From, State = #state{current_size = 0, subscribed_workers = S}) ->
+    MRef = monitor(process, Pid),
     case RequestType of
         blocking ->
-            {noreply, State#state{subscribed_workers = [{blocking, From} | S]}};
-        {active_once, Pid} ->
-            {reply, ok, State#state{subscribed_workers = [{active_once, Pid} | S]}}
+            {noreply, State#state{subscribed_workers = [{blocking, From, MRef} | S]}};
+        active_once ->
+            {reply, ok, State#state{subscribed_workers = [{active_once, Pid, MRef} | S]}}
     end;
-handle_call({request_work, RequestType}, _From, State = #state{queue =Q, current_size = QS, blocked_senders = Blocked}) ->
+handle_call({request_work, {RequestType, Pid}}, _From, State = #state{queue =Q, current_size = QS, blocked_senders = Blocked}) ->
     NewQS = QS -1,
     {{value, Job}, NewQueue} =  queue:out(Q),
     NB = if 
@@ -59,16 +60,18 @@ handle_call({request_work, RequestType}, _From, State = #state{queue =Q, current
     case RequestType of
         blocking ->
             {reply, {ok, Job}, State#state{queue = NewQueue, current_size = NewQS, blocked_senders = NB}};
-        {active_once, Pid} ->
+        active_once ->
             Pid ! {job, Job},
             {reply, ok, State#state{queue = NewQueue, current_size = NewQS, blocked_senders = NB}}
     end;
 handle_call({push, Job}, _From, State = #state{queue = Q, current_size = 0, subscribed_workers = S}) ->
     case S of
-        [{active_once, W}|S2] ->
+        [{active_once, W, MRef}|S2] ->
+            demonitor(MRef, [flush]),
             W ! {job, Job},
             {reply, ok, State#state{subscribed_workers = S2}};
-        [{blocking, W}|S2] ->
+        [{blocking, W, MRef}|S2] ->
+            demonitor(MRef, [flush]),
             gen_server:reply(W,{ok, Job}),
             {reply, ok, State#state{subscribed_workers = S2}};
         [] ->
@@ -88,12 +91,15 @@ handle_call({push, Job}, From, State = #state{queue = Q, current_size = QS, size
     end;
 
 handle_call({stop_recv, Pid}, _From, State = #state{subscribed_workers = S}) ->
-        {reply, ok, State#state{subscribed_workers = lists:delete({active_once,Pid}, S)}}.
+        {reply, ok, State#state{subscribed_workers = lists:keydelete(Pid, 2, S)}}.
 
 
 
 handle_cast(_Cast, State) ->
     {noreply, State}.
+handle_info({'DOWN', MonitorRef, _, _, _}, State = #state{subscribed_workers = S}) ->
+    {noreply, State#state{subscribed_workers = lists:keydelete(MonitorRef, 3, S)}};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
