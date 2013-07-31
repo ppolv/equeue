@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %%API
--export([start_link/1,push/2, active_once/1, recv/1, stop_recv/1]).
+-export([start_link/1, start_link/2, push/2, active_once/1, recv/1, stop_recv/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -32,6 +32,8 @@ stop_recv(Queue) ->
 
 start_link(Size) ->
     gen_server:start_link(?MODULE, [Size], []).
+start_link(Name, Size) ->
+    gen_server:start_link({local, Name}, ?MODULE, [Size], []).
 
 
 init([Size]) ->

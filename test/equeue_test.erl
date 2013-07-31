@@ -132,6 +132,14 @@ worker_crash_test() ->
     ok.
 
 
+registered_name_test() ->
+    Name = 'queue',
+    {ok, _} = equeue:start_link(Name, 10),
+    ok = equeue:push(Name, 'item'),
+    ?assertMatch({ok,'item'}, equeue:recv(Name)).
+
+    
+
 
 
 
