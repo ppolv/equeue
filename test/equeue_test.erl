@@ -13,7 +13,9 @@ blocking_test() ->
     {ok,Q} = equeue:start_link(10),  %%a queue of size 10
     Parent = self(),
     lists:foreach(fun(_) ->
-                spawn(fun() -> blocking_worker(Q, Parent) end)
+                spawn(fun() ->
+                            ok = equeue:register_worker(Q),
+                            blocking_worker(Q, Parent) end)
         end, lists:seq(1,2)), %%2 receivers
     _Senders = lists:foreach(fun(I) -> 
                 spawn(fun() ->
@@ -46,6 +48,7 @@ paralell_test() ->
     {ok,P} = equeue:start_link(10),  %%a queue of size 10
     Parent = self(),
 
+    ok = equeue:register_worker(P),
     ok = equeue:active_once(P), %%subscribe
     equeue:stop_recv(P), %%desubscribe, check we don't receive anything
     receive
@@ -66,6 +69,7 @@ paralell_test() ->
 
     _Receivers = lists:foreach(fun(_) -> 
                 spawn(fun() ->
+                            ok = equeue:register_worker(P),
                             random:seed(now()),
                             worker(P, Parent)
                     end) end, lists:seq(1,2)),  %% 2 receivers
@@ -103,10 +107,12 @@ worker_crash_test() ->
     {ok,Q} = equeue:start_link(10),
     Parent = self(),
     Pids = lists:map(fun(I) -> spawn(fun() ->
+                ok = equeue:register_worker(Q),
                 {ok,Item} = equeue:recv(Q),
                 Parent ! {I, Item}
         end) end, lists:seq(1,5)),
     Pids2 = lists:map(fun(I) -> spawn(fun() ->
+                ok = equeue:register_worker(Q),
                 equeue:active_once(Q),
                 receive
                     {job,Item} ->
@@ -135,12 +141,28 @@ worker_crash_test() ->
 registered_name_test() ->
     Name = 'queue',
     {ok, _} = equeue:start_link(Name, 10),
+    ok = equeue:register_worker(Name),
     ok = equeue:push(Name, 'item'),
     ?assertMatch({ok,'item'}, equeue:recv(Name)).
 
     
 
 
+no_worker_test() ->
+    {ok, Q} = equeue:start_link(10),
+    ?assertMatch({error, {no_worker_on_queue, Q}}, equeue:push(Q, 'item')).
+
 
 
                 
+all_worker_crash_test() ->
+    {ok,Q} = equeue:start_link(10),
+    Parent = self(),
+    Pids = lists:map(fun(I) -> spawn(fun() ->
+                ok = equeue:register_worker(Q),
+                {ok,Item} = equeue:active_once(Q),
+                Parent ! {I, Item}
+        end) end, lists:seq(1,5)),
+    [exit(Pid, crash) || Pid <- Pids],
+    ?assertMatch({error, {no_worker_on_queue, Q}}, equeue:push(Q, item)).
+
