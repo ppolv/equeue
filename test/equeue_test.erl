@@ -3,9 +3,10 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(PARALELL_SENDERS,5).
+-define(JOB_TIMEOUT, 100). %0.1 second
 
 blocking_worker(Queue, Parent) ->
-    {ok, J} = equeue:recv(Queue),
+    {ok, J} = equeue:recv(Queue, ?JOB_TIMEOUT),
     Parent ! {out, J},
     blocking_worker(Queue, Parent).
 
@@ -31,12 +32,8 @@ blocking_test() ->
     check_results(All).
 
 
-
-
-
-
 worker(Queue, Parent) ->
-    equeue:active_once(Queue),
+    equeue:active_once(Queue, ?JOB_TIMEOUT),
     receive
         X ->
             Parent ! {out,X}
@@ -49,7 +46,7 @@ paralell_test() ->
     Parent = self(),
 
     ok = equeue:register_worker(P),
-    ok = equeue:active_once(P), %%subscribe
+    ok = equeue:active_once(P, ?JOB_TIMEOUT), %%subscribe
     equeue:stop_recv(P), %%desubscribe, check we don't receive anything
     receive
         _X -> ?assert(false)
@@ -108,12 +105,12 @@ worker_crash_test() ->
     Parent = self(),
     Pids = lists:map(fun(I) -> spawn(fun() ->
                 ok = equeue:register_worker(Q),
-                {ok,Item} = equeue:recv(Q),
+                {ok,Item} = equeue:recv(Q, ?JOB_TIMEOUT),
                 Parent ! {I, Item}
         end) end, lists:seq(1,5)),
     Pids2 = lists:map(fun(I) -> spawn(fun() ->
                 ok = equeue:register_worker(Q),
-                equeue:active_once(Q),
+                equeue:active_once(Q, ?JOB_TIMEOUT),
                 receive
                     {job,Item} ->
                         Parent ! {I, Item}
@@ -143,7 +140,7 @@ registered_name_test() ->
     {ok, _} = equeue:start_link(Name, 10),
     ok = equeue:register_worker(Name),
     ok = equeue:push(Name, 'item'),
-    ?assertMatch({ok,'item'}, equeue:recv(Name)).
+    ?assertMatch({ok,'item'}, equeue:recv(Name, ?JOB_TIMEOUT)).
 
     
 
@@ -160,9 +157,45 @@ all_worker_crash_test() ->
     Parent = self(),
     Pids = lists:map(fun(I) -> spawn(fun() ->
                 ok = equeue:register_worker(Q),
-                {ok,Item} = equeue:active_once(Q),
+                {ok,Item} = equeue:active_once(Q, ?JOB_TIMEOUT),
                 Parent ! {I, Item}
         end) end, lists:seq(1,5)),
     [exit(Pid, crash) || Pid <- Pids],
     ?assertMatch({error, {no_worker_on_queue, Q}}, equeue:push(Q, item)).
+
+
+
+bad_worker(Queue ) ->
+    ok = equeue:active_once(Queue, ?JOB_TIMEOUT),
+    receive
+        {job, _} -> ok
+    end,
+    receive
+        this_never_will_match -> ok
+    end,
+    bad_worker(Queue).
+
+worker_not_registered_test() ->
+    {ok,Q} = equeue:start_link(10),
+    ?assertEqual({error, no_registered_as_worker}, equeue:recv(Q, ?JOB_TIMEOUT)).
+
+worker_stuck_test() ->
+    {ok,Q} = equeue:start_link(10),
+    Pids = lists:map(fun(_I) -> spawn(fun() ->
+                            ok = equeue:register_worker(Q),
+                            bad_worker(Q)
+        end) end, lists:seq(1,5)),
+    [monitor(process, Pid) || Pid <- Pids],
+    equeue:push(Q, a),
+    equeue:push(Q, b),
+    equeue:push(Q, c),
+    equeue:push(Q, d),
+    equeue:push(Q, e),
+    equeue:push(Q, f),
+    timer:sleep(500), %%give time to the queue to kill bad workers
+    Down = receive_all(5),
+    DownPids = lists:sort([Pid ||  {'DOWN', _, process, Pid, killed} <- Down]),
+    ?assertMatch(DownPids, lists:sort(Pids)),
+    ?assertMatch({error, {no_worker_on_queue, Q}}, equeue:push(Q, item)).
+
 
