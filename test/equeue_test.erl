@@ -93,7 +93,7 @@ receive_all(N) ->
     receive
         X ->
             [X | receive_all(N-1)]
-    after 100 ->
+    after 200 ->
             []
     end.
 
@@ -116,12 +116,13 @@ worker_crash_test() ->
                         Parent ! {I, Item}
                 end
         end) end, lists:seq(1,5)),
-    timer:sleep(100), %%give time to the 10 processes do subscribe
+    timer:sleep(50), %%give time to the 10 processes do subscribe
     %%then crash some
     exit(lists:nth(1,Pids), crash),  %%crash two processes
     exit(lists:nth(3,Pids), crash),  
     exit(lists:nth(1,Pids2), crash),  %%crash two processes
     exit(lists:nth(3,Pids2), crash),  
+    timer:sleep(10),
     equeue:push(Q, a),
     equeue:push(Q, b),
     equeue:push(Q, c),
@@ -154,13 +155,13 @@ no_worker_test() ->
                 
 all_worker_crash_test() ->
     {ok,Q} = equeue:start_link(10),
-    Parent = self(),
-    Pids = lists:map(fun(I) -> spawn(fun() ->
+    Pids = lists:map(fun(_I) -> spawn(fun() ->
                 ok = equeue:register_worker(Q),
-                {ok,Item} = equeue:active_once(Q, ?JOB_TIMEOUT),
-                Parent ! {I, Item}
+                bad_worker(Q)
         end) end, lists:seq(1,5)),
+    timer:sleep(50),
     [exit(Pid, crash) || Pid <- Pids],
+    timer:sleep(50),
     ?assertMatch({error, {no_worker_on_queue, Q}}, equeue:push(Q, item)).
 
 
@@ -199,3 +200,37 @@ worker_stuck_test() ->
     ?assertMatch({error, {no_worker_on_queue, Q}}, equeue:push(Q, item)).
 
 
+get_state_test() ->
+    {ok,Q} = equeue:start_link(10),
+    _Pids = lists:map(fun(_I) -> spawn(fun() ->
+                            ok = equeue:register_worker(Q),
+                            bad_worker(Q)
+        end) end, lists:seq(1,5)),
+    timer:sleep(10), %%give time to the listeners to subscribe
+    equeue:push(Q, a),
+    equeue:push(Q, b),
+    timer:sleep(50), %%give time to the queue to deliver jobs
+    {ok,R} = equeue:get_state(Q),
+    ?assertEqual(10, proplists:get_value(max_size, R)),
+    ?assertEqual(0, proplists:get_value(current_size, R) ),
+    ?assertEqual(0, proplists:get_value(blocked_senders, R)),
+    ?assertEqual(5, proplists:get_value(registered_listeners, R)),
+    ?assertEqual(3, proplists:get_value(blocked_listeners, R)).
+
+get_state_blocked_test() ->
+    {ok,Q} = equeue:start_link(10),
+    _Pids = lists:map(fun(_I) -> spawn(fun() ->
+                            ok = equeue:register_worker(Q),
+                            bad_worker(Q)
+        end) end, lists:seq(1,2)), %%just two listeners
+    timer:sleep(10), %%give time to the listeners to subscribe
+    _PushersPids = lists:map(fun(_I) -> spawn(fun() ->
+                            ok = equeue:push(Q, item)
+        end) end, lists:seq(1,20)), %%20 paralell pushes
+    timer:sleep(10), %%give time to the pushers
+    {ok,R} = equeue:get_state(Q),
+    ?assertEqual(10, proplists:get_value(max_size, R)),
+    ?assertEqual(18, proplists:get_value(current_size, R) ),
+    ?assertEqual(8, proplists:get_value(blocked_senders, R)),
+    ?assertEqual(2, proplists:get_value(registered_listeners, R)),
+    ?assertEqual(0, proplists:get_value(blocked_listeners, R)).

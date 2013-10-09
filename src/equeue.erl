@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %%API
--export([start_link/1, start_link/2, push/2, active_once/2, recv/2, stop_recv/1, register_worker/1]).
+-export([start_link/1, start_link/2, push/2, active_once/2, recv/2, stop_recv/1, register_worker/1, get_state/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -42,6 +42,11 @@ start_link(Size) ->
 start_link(Name, Size) ->
     gen_server:start_link({local, Name}, ?MODULE, [Size], []).
 
+%% {ok,[{key(),val()}]}.
+%% key() = current_size|max_size|blocked_senders|registered_listeners|blocked_listeners
+%% val() = int()
+get_state(Queue) ->
+    gen_server:call(Queue, get_state).
 
 init([Size]) ->
     {ok, #state{size = Size, 
@@ -51,6 +56,19 @@ init([Size]) ->
             blocked_senders=queue:new(), 
             workers=[], 
             ongoing_work = []}}.
+handle_call(get_state, _From, State) ->
+   #state{size = Size, 
+          current_size = CurrentSize, 
+          subscribed_workers = Subscribed, 
+          blocked_senders=Blocked, 
+          workers=Registered
+          } = State,
+    Info = [ {current_size, CurrentSize}, 
+        {max_size, Size}, 
+        {blocked_senders, length(queue:to_list(Blocked))}, 
+        {registered_listeners, length(Registered)}, 
+        {blocked_listeners, length(Subscribed)}],
+    {reply, {ok, Info}, State};
 
 handle_call({register_worker,  Pid}, _From, State = #state{workers = Registered}) ->
     MRef = erlang:monitor(process, Pid),
