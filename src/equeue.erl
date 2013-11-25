@@ -151,7 +151,7 @@ do_request_work({_, Pid, _}=Request, From, State = #state{ongoing_work = L}) ->
                         State;  %% we don't have it.. should not happen
                     {value, {Pid, TRef, _Job}, NewList} ->  
                         %%this worker is alive and asking for more jobs, cancel the timer
-                        timer:cancel(TRef),
+                        erlang:cancel_timer(TRef),
                         State#state{ongoing_work = NewList} 
                 end,
     do_request_work2(Request, From, NewState).
@@ -184,7 +184,7 @@ do_request_work2({RequestType, Pid, KillIfNotDoneIn}, _From, State = #state{queu
     end.
 
 monitor_job(Pid, KillIfNotDoneIn, Job, State) ->
-    {ok, TRef} = timer:send_after(KillIfNotDoneIn, self(), {worker_stuck, Pid} ),
+    TRef = erlang:send_after(KillIfNotDoneIn, self(), {worker_stuck, Pid} ),
     State#state{ongoing_work = [{Pid, TRef, Job} | State#state.ongoing_work]}.
 
 
