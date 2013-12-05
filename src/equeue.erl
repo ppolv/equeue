@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %%API
--export([start_link/1, start_link/2, push/2, active_once/2, recv/2, stop_recv/1, register_worker/1, get_state/1]).
+-export([start_link/1, start_link/2, push/2, active_once/2, recv/2, stop_recv/1, register_worker/1, get_state/1, mark_completed/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -25,6 +25,12 @@
 push(Queue, Item) ->
     gen_server:call(Queue, {push, Item}, infinity).
 
+
+%% This is a synchronous calls.  It returns only when all items queued before this
+%% call have been delivered to workers.
+mark_completed(Queue) ->
+    gen_server:call(Queue, {push, '$equeue-mark-completed'}, infinity).
+
 active_once(Queue, KillIfNotDoneIn) ->
     gen_server:call(Queue, {request_work, {active_once, self(), KillIfNotDoneIn}}).
 
@@ -36,6 +42,7 @@ stop_recv(Queue) ->
 
 register_worker(Queue) ->
     gen_server:call(Queue, {register_worker, self()}).
+
 
 start_link(Size) ->
     gen_server:start_link(?MODULE, [Size], []).
@@ -80,9 +87,16 @@ handle_call({request_work, {_,Pid, _} = Request}, From, State = #state{workers=R
         false ->
             {reply, {error, no_registered_as_worker}, State}
     end;
+handle_call({push, '$equeue-mark-completed'}, _From, State = #state{current_size =0}) ->
+    {reply, ok, State};
+handle_call({push, '$equeue-mark-completed'}, From, State = #state{queue = Q, current_size = QS}) ->
+    NewQueue = queue:in({'$equeue-mark-completed', From}, Q),
+    NewQS = QS +1,
+    {noreply, State#state{queue = NewQueue, current_size = NewQS}};
 handle_call({push, _Job}, _From, State = #state{workers = []}) ->
         {reply, {error, {no_worker_on_queue, self()}}, State};
 handle_call({push, Job}, _FromPush, State = #state{queue = Q, current_size = 0, subscribed_workers = S}) ->
+    %% can't be a '$equeue-mark-completed'
     case S of
         [{active_once, Pid, _, KillIfNotDoneIn}|S2] ->
             NewState = monitor_job(Pid, KillIfNotDoneIn, Job, State),
@@ -140,7 +154,8 @@ code_change(_OldVsn, State, _Extra) ->
 %% Don't print the job as it could be large, containing many tokens :/.  The info would be in the backtrace anyway.
 kill_worker(Queue, Pid, _Job) ->
     io:format("killing ~p from queue ~p: ~p", [Pid, Queue, _Job]),
-    BackTrace = process_info(Pid, backtrace),
+            %% WHY?.  Removing the io:format/2 causes eunit tests to fail...
+    BackTrace = "process_info(Pid, backtrace)",
     exit(Pid, kill),
     lager:error("Queue ~p killing worker process ~p with backtrace: ~p", [Queue, Pid, BackTrace]),
     ok.
@@ -163,10 +178,10 @@ do_request_work2({RequestType, Pid, KillIfNotDoneIn}, From, State = #state{curre
         active_once ->
             {reply, ok, State#state{subscribed_workers = [{active_once, Pid, From, KillIfNotDoneIn} | S]}}
     end;
-do_request_work2({RequestType, Pid, KillIfNotDoneIn}, _From, State = #state{queue =Q, current_size = QS, blocked_senders = Blocked}) ->
+do_request_work2({RequestType, Pid, KillIfNotDoneIn}=Req, From, State = #state{queue =Q, current_size = QS, blocked_senders = Blocked}) ->
     NewQS = QS -1,
     {{value, Job}, NewQueue} =  queue:out(Q),
-    NB = if 
+    NB = if  
         QS > State#state.size ->
             {{value, B}, NewBlocked} = queue:out(Blocked),
             gen_server:reply(B, ok),
@@ -174,13 +189,19 @@ do_request_work2({RequestType, Pid, KillIfNotDoneIn}, _From, State = #state{queu
         true ->
             Blocked
     end,
-    NewState = monitor_job(Pid, KillIfNotDoneIn, Job, State),
-    case RequestType of
-        blocking ->
-            {reply, {ok, Job}, NewState#state{queue = NewQueue, current_size = NewQS, blocked_senders = NB}};
-        active_once ->
-            Pid ! {job, Job},
-            {reply, ok, NewState#state{queue = NewQueue, current_size = NewQS, blocked_senders = NB}}
+    case Job of
+        {'$equeue-mark-completed', MarkRequester} ->
+            gen_server:reply(MarkRequester, ok),
+            do_request_work2(Req, From, State#state{queue = NewQueue, current_size = NewQS, blocked_senders = NB});
+        _ ->
+            NewState = monitor_job(Pid, KillIfNotDoneIn, Job, State),
+            case RequestType of
+                blocking ->
+                    {reply, {ok, Job}, NewState#state{queue = NewQueue, current_size = NewQS, blocked_senders = NB}};
+                active_once ->
+                    Pid ! {job, Job},
+                    {reply, ok, NewState#state{queue = NewQueue, current_size = NewQS, blocked_senders = NB}}
+            end
     end.
 
 monitor_job(Pid, KillIfNotDoneIn, Job, State) ->

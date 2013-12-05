@@ -234,3 +234,33 @@ get_state_blocked_test() ->
     ?assertEqual(8, proplists:get_value(blocked_senders, R)),
     ?assertEqual(2, proplists:get_value(registered_listeners, R)),
     ?assertEqual(0, proplists:get_value(blocked_listeners, R)).
+
+%% ugly test,  latter make it more clear
+request_mark_test() ->
+    {ok,Q} = equeue:start_link(10),
+%    dbg:tracer(),
+%    dbg:p(Q,c),
+%    dbg:tpl(equeue, []),
+    Self = self(),
+    _Pid = spawn(fun() ->
+                            ok = equeue:register_worker(Q),
+                            _ = equeue:recv(Q, 1000),
+                            timer:sleep(500),
+                            _ = equeue:recv(Q, 1000),
+                            Self ! {done, now()},
+                            _ = equeue:recv(Q, 1000)
+                    end),
+    timer:sleep(10), %%give time to the listeners to subscribe
+    ok = equeue:push(Q, item),
+    ok = equeue:push(Q, item),
+    ok = equeue:mark_completed(Q),
+    timer:sleep(50), %% just enough to let the listener call now() before us
+    Now = now(),
+    receive
+        {done, ListenerDone} ->
+            Diff = timer:now_diff(Now, ListenerDone),
+            ?assert(Diff > 0)
+        after 200 ->
+                ?assert(false)
+    end.
+
