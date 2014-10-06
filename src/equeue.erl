@@ -159,7 +159,7 @@ delete_subscriber_from_queue(Pid, SubscribedWorkers) when is_pid(Pid) ->
 kill_worker(Queue, Pid, _Job) ->
     io:format("killing ~p from queue ~p: ~p", [Pid, Queue, _Job]),
             %% WHY?.  Removing the io:format/2 causes eunit tests to fail...
-    BackTrace = "process_info(Pid, backtrace)",
+    BackTrace = process_info(Pid, backtrace),
     exit(Pid, kill),
     lager:error("Queue ~p killing worker process ~p with backtrace: ~p", [Queue, Pid, BackTrace]),
     ok.
