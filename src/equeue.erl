@@ -3,7 +3,7 @@
 -behaviour(gen_server).
 
 %%API
--export([start_link/1, start_link/2, push/2, active_once/2, recv/2, stop_recv/1, register_worker/1, get_state/1, mark_completed/1]).
+-export([start_link/1, start_link/2, push/2, active_once/2, recv/2, stop_recv/1, register_worker/1, unregister_worker/1, get_state/1, mark_completed/1]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -43,6 +43,9 @@ stop_recv(Queue) ->
 register_worker(Queue) ->
     gen_server:call(Queue, {register_worker, self()}).
 
+unregister_worker(Queue) ->
+    gen_server:call(Queue, {unregister_worker, self()}).
+
 
 start_link(Size) ->
     gen_server:start_link(?MODULE, [Size], []).
@@ -76,6 +79,9 @@ handle_call(get_state, _From, State) ->
         {registered_listeners, length(Registered)}, 
         {blocked_listeners, queue:len(Subscribed)}],
     {reply, {ok, Info}, State};
+
+handle_call({unregister_worker, Pid}, _From, State) ->
+    {reply, ok, delete_worker(Pid, State)};
 
 handle_call({register_worker,  Pid}, _From, State = #state{workers = Registered}) ->
     MRef = erlang:monitor(process, Pid),
@@ -138,11 +144,8 @@ handle_info({worker_stuck, Pid}, State = #state{ongoing_work = S}) ->
             catch kill_worker(self(), Pid, Job),
             {noreply, State#state{ongoing_work = NewList}}
     end;
-handle_info({'DOWN', _MonitorRef, _, Pid, _}, State = #state{subscribed_workers = S}) ->
-    {noreply, State#state{
-            subscribed_workers = delete_subscriber_from_queue(Pid, S), 
-            workers=lists:keydelete(Pid,1, State#state.workers),
-            ongoing_work = lists:keydelete(Pid, 1, State#state.ongoing_work)}};
+handle_info({'DOWN', _MonitorRef, _, Pid, _}, State) ->
+    {noreply, delete_worker(Pid, State)};
 
 handle_info(_Info, State) ->
     {noreply, State}.
@@ -151,6 +154,14 @@ terminate(_Reason, _State) ->
     ok.
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+
+delete_worker(Pid, State = #state{subscribed_workers = S}) ->
+    State#state{
+            subscribed_workers = delete_subscriber_from_queue(Pid, S),
+            workers=lists:keydelete(Pid,1, State#state.workers),
+            ongoing_work = lists:keydelete(Pid, 1, State#state.ongoing_work)}.
+
 
 delete_subscriber_from_queue(Pid, SubscribedWorkers) when is_pid(Pid) ->
         queue:filter(fun({_, SubscriberPid, _, _}) -> SubscriberPid /= Pid end, SubscribedWorkers).
