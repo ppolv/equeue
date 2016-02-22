@@ -10,10 +10,10 @@
 
 -record(state, {
         size :: integer(),   %%If the queue has less element than this this value, producer don't block on push
-        queue :: queue(),
-        blocked_senders :: queue(),   
+        queue :: queue:queue(),
+        blocked_senders :: queue:queue(),   
         current_size :: integer(),
-        subscribed_workers :: queue(),  %%  [{active_once, blocking, pid()|from(), monitor_ref()}]  subscribers
+        subscribed_workers :: queue:queue(),  %%  [{active_once, blocking, pid()|from(), monitor_ref()}]  subscribers
         workers :: [], %% workers that have registered with us, they are monitored. If there is no worked registered, pushes are rejected.
         ongoing_work :: [] %% start a timer for workers that have requested job. If they don't ask for job again in X time, we kill them as
                            %% a countermeasure for bugs where they might become stuck.
